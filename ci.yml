@@ -1,0 +1,73 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Run Selenium tests
+        run: |
+          set -eu
+          python app.py &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -fs http://127.0.0.1:5001/ >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:5001/ >/dev/null
+          xvfb-run -a pytest -v
+
+  deploy:
+    name: Package & deploy
+    needs: [test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release bundle
+        run: |
+          mkdir dist
+          zip -j dist/task-list-app.zip app.py requirements.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: task-list-app
+          path: dist/task-list-app.zip
+
+      - name: Deploy
+        run: echo "Add your deployment commands here"
